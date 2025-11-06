@@ -19,7 +19,7 @@ CORS(app, origins=[
     "http://127.0.0.1:3000",
     "http://localhost:5000",
     "http://127.0.0.1:5000",
-    "http://localhost:8080",
+    "https://petroai-iq.firebaseapp.com/plotly.html",
     "https://petroai-iq.web.app/plotly.html"
 ])
 
