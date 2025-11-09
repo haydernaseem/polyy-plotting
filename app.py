@@ -53,7 +53,7 @@ CORS(app, origins=[
     "http://localhost:5500",
     "http://127.0.0.1:5500",
     "https://*.web.app",
-    "https://*.firebaseapp.com"
+    "https://*.firebaseapp.com",
     "https://petroai-iq.web.app/plotly.html"
 ])
 
