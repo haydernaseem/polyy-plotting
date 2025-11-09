@@ -16,7 +16,7 @@ CORS(app, resources={
         "origins": [
             "https://petroai-web.web.app",
             "https://petroai-web.firebaseapp.com",
-            "https://petroai-iq.web.app", 
+            "https://petroai-iq.web.app",
             "https://petroai-iq.firebaseapp.com",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
@@ -25,8 +25,7 @@ CORS(app, resources={
             "http://localhost:8080",
             "http://127.0.0.1:8080",
             "http://localhost:5500",
-            "http://127.0.0.1:5500",
-            'https://petroai-iq.web.app/plotly.html"
+            "http://127.0.0.1:5500"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
@@ -154,8 +153,7 @@ class PolyYPlot:
 def allowed_file(filename):
     """التحقق من نوع الملف"""
     return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower(
-           ) in app.config['ALLOWED_EXTENSIONS']
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 
 def read_data_file(file):
@@ -170,6 +168,7 @@ def read_data_file(file):
             try:
                 return pd.read_csv(file, sep='\t')
             except:
+                file.seek(0)  # إعادة تعيين المؤشر
                 return pd.read_csv(file, sep=',')
         elif filename.endswith(('.xlsx', '.xls')):
             return pd.read_excel(file)
@@ -219,8 +218,7 @@ def upload_file():
 
         # تنظيف البيانات - معالجة القيم الناقصة
         df_clean = df.copy()
-        numeric_columns = df_clean.select_dtypes(
-            include=[np.number]).columns.tolist()
+        numeric_columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
 
         for col in numeric_columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
@@ -308,8 +306,7 @@ def create_plot():
             plotter.add_trace(
                 x_data=trace_config['x_data'],
                 y_data=trace_config['y_data'],
-                name=trace_config.get(
-                    'name', f'Trace {len(plotter.traces) + 1}'),
+                name=trace_config.get('name', f'Trace {len(plotter.traces) + 1}'),
                 kind=trace_config.get('kind', 'line'),
                 color=trace_config.get('color'),
                 yaxis=trace_config.get('yaxis')
@@ -323,7 +320,6 @@ def create_plot():
 
         response = {
             'success': True,
-            # تحويل إلى dict لتفادي مشاكل التسلسل
             'plot_json': json.loads(plot_json),
             'traces_count': len(traces_data),
             'y_axes_count': len(plotter.y_axes),
@@ -381,19 +377,15 @@ def create_plot_from_file():
 
         for i, y_col in enumerate(y_columns):
             if y_col and y_col in df.columns:
-                y_data = pd.to_numeric(
-                    df[y_col], errors='coerce').dropna().tolist()
+                y_data = pd.to_numeric(df[y_col], errors='coerce').dropna().tolist()
 
                 if len(y_data) > 0:
                     plotter.add_trace(
                         x_data=x_data[:len(y_data)],  # تأكد من تطابق الطول
                         y_data=y_data,
-                        name=names[i] if i < len(
-                            names) and names[i] else y_col,
-                        kind=kinds[i] if i < len(
-                            kinds) and kinds[i] else 'line',
-                        color=colors[i] if i < len(
-                            colors) and colors[i] else None
+                        name=names[i] if i < len(names) and names[i] else y_col,
+                        kind=kinds[i] if i < len(kinds) and kinds[i] else 'line',
+                        color=colors[i] if i < len(colors) and colors[i] else None
                     )
                     valid_traces += 1
 
@@ -477,8 +469,7 @@ def test_plot():
 
         plotter.add_trace(
             x_data=x_data,
-            y_data=[50 * np.sin(i * 0.1) + np.random.normal(0, 5)
-                    for i in x_data],
+            y_data=[50 * np.sin(i * 0.1) + np.random.normal(0, 5) for i in x_data],
             name="Sine Wave",
             kind="scatter",
             color="#4ECDC4"
