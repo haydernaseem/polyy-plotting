@@ -13,6 +13,7 @@ warnings.filterwarnings('ignore')
 # محاولة استيراد مكتبات التنبؤ
 try:
     from sklearn.preprocessing import MinMaxScaler
+    from sklearn.linear_model import LinearRegression
     FORECAST_AVAILABLE = True
 except ImportError:
     FORECAST_AVAILABLE = False
@@ -69,7 +70,7 @@ class PolyYPlot:
                 x=x_data,
                 y=y_data,
                 name=name,
-                line=dict(color=color),
+                line=dict(color=color, width=2),
                 yaxis=yaxis
             )
         elif kind == "scatter":
@@ -78,7 +79,7 @@ class PolyYPlot:
                 y=y_data,
                 name=name,
                 mode='markers',
-                marker=dict(color=color),
+                marker=dict(color=color, size=6),
                 yaxis=yaxis
             )
         elif kind == "area":
@@ -87,7 +88,7 @@ class PolyYPlot:
                 y=y_data,
                 name=name,
                 fill='tozeroy',
-                line=dict(color=color),
+                line=dict(color=color, width=2),
                 yaxis=yaxis
             )
         elif kind == "bar":
@@ -103,7 +104,7 @@ class PolyYPlot:
                 x=x_data,
                 y=y_data,
                 name=name,
-                line=dict(color=color),
+                line=dict(color=color, width=2),
                 yaxis=yaxis
             )
 
@@ -130,13 +131,15 @@ class PolyYPlot:
             'height': height,
             'showlegend': True,
             'plot_bgcolor': 'rgba(0,0,0,0)',
-            'paper_bgcolor': 'rgba(0,0,0,0)'
+            'paper_bgcolor': 'rgba(0,0,0,0)',
+            'font': {'color': 'white' if self.template == 'plotly_dark' else 'black'},
+            'margin': {'t': 50, 'r': 50, 'b': 80, 'l': 80}
         }
 
         # إعداد محاور Y المتعددة
         for i, yaxis in enumerate(self.y_axes):
             side = 'right' if i % 2 == 1 else 'left'
-            position = 1.0 - (i * 0.15) if side == 'right' else None
+            position = 0.98 - (i * 0.15) if side == 'right' else 0.02
 
             layout_updates[f'yaxis{i+1}'] = {
                 'title': f'Y{i+1}',
@@ -145,14 +148,18 @@ class PolyYPlot:
                 'overlaying': 'y' if i > 0 else None,
                 'showgrid': True,
                 'gridcolor': 'rgba(128,128,128,0.2)',
-                'zeroline': False
+                'zeroline': False,
+                'showline': True,
+                'linecolor': 'rgba(128,128,128,0.5)'
             }
 
         # إعداد محور X
         layout_updates['xaxis'] = {
             'showgrid': True,
             'gridcolor': 'rgba(128,128,128,0.2)',
-            'zeroline': False
+            'zeroline': False,
+            'showline': True,
+            'linecolor': 'rgba(128,128,128,0.5)'
         }
 
         fig.update_layout(**layout_updates)
@@ -165,6 +172,25 @@ class AdvancedForecaster:
     def __init__(self, lookback=10):
         self.lookback = lookback
         
+    def prepare_dataframe(self, data_dict):
+        """تحضير DataFrame من البيانات الواردة"""
+        try:
+            # إذا كانت البيانات قائمة من القواميس
+            if isinstance(data_dict, list):
+                return pd.DataFrame(data_dict)
+            # إذا كانت البيانات قاموساً من القوائم
+            elif isinstance(data_dict, dict):
+                # التحقق إذا كانت القيم قوائم
+                if all(isinstance(v, list) for v in data_dict.values()):
+                    return pd.DataFrame(data_dict)
+                else:
+                    # إذا كانت البيانات بشكل آخر، حاول تحويلها
+                    return pd.DataFrame([data_dict])
+            else:
+                raise ValueError("Unsupported data format")
+        except Exception as e:
+            raise ValueError(f"Error preparing dataframe: {str(e)}")
+    
     def analyze_x_axis(self, x_data):
         """تحليل محور X لتحديد نوع البيانات والفترات"""
         try:
@@ -227,11 +253,11 @@ class AdvancedForecaster:
             # إنشاء تواريخ مستقبلية
             interval_hours = x_analysis['avg_interval_hours']
             future_dates = [last_x + pd.Timedelta(hours=interval_hours * (i+1)) for i in range(forecast_steps)]
-            return future_dates
+            return [date.strftime('%Y-%m-%d %H:%M:%S') for date in future_dates]
         elif x_analysis['type'] == 'numeric':
             # إنشاء قيم رقمية مستقبلية
             interval = x_analysis['avg_interval']
-            future_values = [last_x + interval * (i+1) for i in range(forecast_steps)]
+            future_values = [float(last_x + interval * (i+1)) for i in range(forecast_steps)]
             return future_values
         else:
             # استخدام الفهرس
@@ -239,13 +265,88 @@ class AdvancedForecaster:
             future_indices = [last_index + i + 1 for i in range(forecast_steps)]
             return future_indices
     
-    def advanced_moving_average_forecast(self, y_data, window_size, forecast_steps):
-        """تنبؤ متقدم باستخدام المتوسط المتحرك مع تحليل الاتجاه"""
-        if len(y_data) < window_size:
+    def advanced_forecast_method(self, y_data, forecast_steps):
+        """طريقة تنبؤ متقدمة باستخدام تحليل الاتجاه والأنماط"""
+        if len(y_data) < 10:
             return [], []
         
-        # حساب المتوسط المتحرك
+        try:
+            # تحليل الاتجاه باستخدام الانحدار الخطي
+            x_trend = np.arange(len(y_data)).reshape(-1, 1)
+            trend_model = LinearRegression()
+            trend_model.fit(x_trend, y_data)
+            trend_coef = trend_model.coef_[0]
+            
+            # حساب الموسمية (إن وجدت)
+            seasonal_component = self.detect_seasonality(y_data)
+            
+            # حساب التباين
+            volatility = np.std(y_data[-10:]) if len(y_data) >= 10 else np.std(y_data)
+            
+            # التنبؤ المستقبلي
+            future_predictions = []
+            last_value = y_data[-1]
+            
+            for i in range(forecast_steps):
+                # الجمع بين الاتجاه والموسمية والضوضاء
+                trend_part = trend_coef * (i + 1)
+                seasonal_part = seasonal_component[i % len(seasonal_component)] if seasonal_component else 0
+                noise_part = np.random.normal(0, volatility * 0.2)
+                
+                next_value = last_value + trend_part + seasonal_part + noise_part
+                
+                # التأكد من أن القيم واقعية
+                if np.min(y_data) >= 0 and next_value < 0:
+                    next_value = max(0, next_value)
+                    
+                future_predictions.append(float(next_value))
+            
+            # إنشاء تنبؤات تاريخية للمقارنة
+            historical_fit = trend_model.predict(x_trend).tolist()
+            
+            return future_predictions, historical_fit
+            
+        except Exception as e:
+            print(f"Advanced forecast error: {e}")
+            # استخدام طريقة احتياطية
+            return self.moving_average_forecast(y_data, forecast_steps)
+    
+    def detect_seasonality(self, data):
+        """كشف الأنماط الموسمية في البيانات"""
+        if len(data) < 20:
+            return []
+        
+        try:
+            # تحويل البيانات إلى سلسلة زمنية
+            ts = pd.Series(data)
+            
+            # حساب الارتباط الذاتي للكشف عن الموسمية
+            autocorr = []
+            max_lag = min(10, len(data) // 4)
+            
+            for lag in range(1, max_lag + 1):
+                if lag < len(data):
+                    corr = np.corrcoef(data[:-lag], data[lag:])[0, 1]
+                    autocorr.append(corr)
+            
+            # إذا كان هناك ارتباط ذاتي قوي، يوجد نمط موسمي
+            if autocorr and max(autocorr) > 0.5:
+                best_lag = np.argmax(autocorr) + 1
+                seasonal_pattern = data[-best_lag:] if len(data) >= best_lag else []
+                return seasonal_pattern
+            
+            return []
+        except:
+            return []
+    
+    def moving_average_forecast(self, y_data, forecast_steps):
+        """طريقة المتوسط المتحرك كبديل"""
+        if len(y_data) < 5:
+            return [], []
+        
+        window_size = min(5, len(y_data) // 4)
         moving_avg = []
+        
         for i in range(window_size, len(y_data)):
             window = y_data[i-window_size:i]
             moving_avg.append(np.mean(window))
@@ -253,29 +354,15 @@ class AdvancedForecaster:
         if len(moving_avg) < 2:
             return [], []
         
-        # تحليل الاتجاه باستخدام الانحدار الخطي البسيط
-        x_trend = np.arange(len(moving_avg))
-        trend_coef = np.polyfit(x_trend, moving_avg, 1)[0]  # ميل الخط
+        # التنبؤ البسيط
+        last_avg = moving_avg[-1]
+        last_trend = moving_avg[-1] - moving_avg[-2] if len(moving_avg) > 1 else 0
+        volatility = np.std(y_data[-window_size:])
         
-        # حساب التباين الأخير
-        recent_data = y_data[-window_size:]
-        recent_volatility = np.std(recent_data)
-        
-        # التنبؤ المستقبلي
-        last_value = y_data[-1]
         future_predictions = []
-        
         for i in range(forecast_steps):
-            # الجمع بين الاتجاه والتذبذب الطبيعي
-            trend_component = trend_coef * (i + 1)
-            noise_component = np.random.normal(0, recent_volatility * 0.3)
-            next_value = last_value + trend_component + noise_component
-            
-            # التأكد من أن القيم واقعية (لا توجد قيم سالبة للبيانات الموجبة)
-            if np.min(y_data) >= 0 and next_value < 0:
-                next_value = max(0, next_value)
-                
-            future_predictions.append(next_value)
+            next_value = last_avg + last_trend * (i + 1) + np.random.normal(0, volatility * 0.3)
+            future_predictions.append(float(next_value))
         
         return future_predictions, moving_avg
     
@@ -283,7 +370,7 @@ class AdvancedForecaster:
         """التنبؤ بالقيم المستقبلية مع تحليل محور X"""
         try:
             # تحويل البيانات إلى DataFrame
-            df = pd.DataFrame(data_dict)
+            df = self.prepare_dataframe(data_dict)
             
             if df.empty:
                 return {'success': False, 'error': 'Empty dataset provided'}
@@ -293,10 +380,12 @@ class AdvancedForecaster:
             
             # تحليل محور X
             x_analysis = self.analyze_x_axis(df[x_col])
+            print(f"X-axis analysis: {x_analysis['type']}, regular: {x_analysis.get('is_regular', False)}")
             
             # تحديد عدد خطوات التنبؤ (25% من البيانات)
             total_length = len(df)
             forecast_steps = max(3, int(total_length * forecast_percentage))
+            print(f"Forecast steps: {forecast_steps} (25% of {total_length})")
             
             forecasts = {}
             future_x_values = {}
@@ -304,37 +393,36 @@ class AdvancedForecaster:
             
             for y_col in y_cols:
                 if y_col not in df.columns:
+                    print(f"Y column {y_col} not found in data")
                     continue
                     
                 # استخراج البيانات وتنظيفها
                 y_data_series = pd.to_numeric(df[y_col], errors='coerce')
                 valid_indices = y_data_series.notna()
                 
-                if valid_indices.sum() < self.lookback + 5:
+                valid_count = valid_indices.sum()
+                print(f"Column {y_col}: {valid_count} valid values out of {len(df)}")
+                
+                if valid_count < self.lookback + 5:
+                    print(f"Column {y_col}: insufficient valid data ({valid_count} < {self.lookback + 5})")
                     continue
                 
                 # استخدام البيانات الصالحة فقط
                 y_data = y_data_series[valid_indices].values
-                corresponding_x = x_analysis['values'].iloc[valid_indices[valid_indices].index].values
                 
                 # إنشاء قيم X مستقبلية
                 future_x = self.generate_future_x(x_analysis, forecast_steps)
                 future_x_values[y_col] = future_x
                 
-                # استخدام المتوسط المتحرك المتقدم للتنبؤ
-                window_size = min(7, len(y_data) // 6)
-                if window_size < 3:
-                    window_size = 3
-                
-                future_predictions, moving_avg = self.advanced_moving_average_forecast(
-                    y_data, window_size, forecast_steps
-                )
+                # استخدام طريقة التنبؤ المتقدمة
+                future_predictions, historical_fit = self.advanced_forecast_method(y_data, forecast_steps)
                 
                 if not future_predictions:
+                    print(f"Column {y_col}: no predictions generated")
                     continue
                 
                 forecasts[y_col] = future_predictions
-                historical_predictions[y_col] = moving_avg
+                historical_predictions[y_col] = historical_fit
             
             if not forecasts:
                 return {'success': False, 'error': 'No successful forecasts generated for any column'}
@@ -350,10 +438,12 @@ class AdvancedForecaster:
                     'type': x_analysis['type'],
                     'is_regular': x_analysis.get('is_regular', False)
                 },
-                'method': 'advanced_moving_average'
+                'method': 'advanced_forecasting',
+                'columns_forecasted': list(forecasts.keys())
             }
             
         except Exception as e:
+            print(f"Forecasting error: {str(e)}")
             return {
                 'success': False,
                 'error': f'Forecasting error: {str(e)}'
@@ -394,7 +484,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'PolyY Plotting API',
-        'version': '2.2',
+        'version': '2.3',
         'endpoints': {
             'upload': '/upload (POST) - Upload data file',
             'create_plot': '/create_plot (POST) - Create plot from JSON',
@@ -408,7 +498,8 @@ def health_check():
             'forecasting_available': FORECAST_AVAILABLE,
             'multi_y_axis': True,
             'advanced_forecasting': True,
-            'x_axis_analysis': True
+            'x_axis_analysis': True,
+            'seasonality_detection': True
         }
     })
 
@@ -650,6 +741,8 @@ def forecast():
         chart_type = data.get('chart_type', 'line')
         forecast_percentage = data.get('forecast_percentage', 0.25)
 
+        print(f"Received forecast request: x_col={x_col}, y_cols={y_cols}, chart_type={chart_type}")
+
         if not data_dict:
             return jsonify({'error': 'No data provided for forecasting'}), 400
 
@@ -679,12 +772,14 @@ def forecast():
             'lookback': result['lookback'],
             'x_analysis': result['x_analysis'],
             'method': result['method'],
+            'columns_forecasted': result['columns_forecasted'],
             'message': f'Successfully generated advanced forecasts for {len(result["forecasts"])} columns'
         }
 
         return jsonify(response)
 
     except Exception as e:
+        print(f"Forecasting error: {str(e)}")
         return jsonify({'error': f'Error generating forecasts: {str(e)}'}), 500
 
 
