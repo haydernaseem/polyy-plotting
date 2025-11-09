@@ -7,6 +7,12 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+import tensorflow as tf
+import warnings
+warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
@@ -14,13 +20,13 @@ app = Flask(__name__)
 CORS(app, origins=[
     "https://petroai-web.web.app",
     "https://petroai-web.firebaseapp.com",
-    "https://petroai-iq.web.app",
+    "https://petroai-iq.web.app/plotly.html",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5000",
     "http://127.0.0.1:5000",
-    "https://petroai-iq.firebaseapp.com/plotly.html",
-    "https://petroai-iq.web.app/plotly.html"
+    "http://localhost:8080",
+    "http://127.0.0.1:8080"
 ])
 
 # إعدادات التطبيق
@@ -140,6 +146,117 @@ class PolyYPlot:
         return fig
 
 
+class LSTMForecaster:
+    """فئة للتنبؤ باستخدام LSTM"""
+    
+    def __init__(self, lookback=10, forecast_steps=10):
+        self.lookback = lookback
+        self.forecast_steps = forecast_steps
+        self.scalers = {}
+        self.models = {}
+        
+    def create_sequences(self, data, lookback):
+        """إنشاء متواليات للتدريب"""
+        X, y = [], []
+        for i in range(lookback, len(data)):
+            X.append(data[i-lookback:i])
+            y.append(data[i])
+        return np.array(X), np.array(y)
+    
+    def build_model(self, input_shape):
+        """بناء نموذج LSTM"""
+        model = Sequential([
+            LSTM(50, return_sequences=True, input_shape=input_shape),
+            Dropout(0.2),
+            LSTM(50, return_sequences=True),
+            Dropout(0.2),
+            LSTM(50),
+            Dropout(0.2),
+            Dense(25),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        return model
+    
+    def forecast(self, data_dict, x_col, y_cols, forecast_percentage=0.25):
+        """التنبؤ بالقيم المستقبلية"""
+        try:
+            # تحويل البيانات إلى DataFrame
+            df = pd.DataFrame(data_dict)
+            
+            # تحديد عدد خطوات التنبؤ (25% من البيانات)
+            total_length = len(df)
+            forecast_steps = max(3, int(total_length * forecast_percentage))
+            
+            forecasts = {}
+            historical_predictions = {}
+            
+            for y_col in y_cols:
+                if y_col not in df.columns:
+                    continue
+                    
+                # استخراج البيانات وتنظيفها
+                y_data = pd.to_numeric(df[y_col], errors='coerce').dropna().values
+                
+                if len(y_data) < self.lookback + 5:
+                    continue
+                
+                # تطبيع البيانات
+                scaler = MinMaxScaler()
+                y_scaled = scaler.fit_transform(y_data.reshape(-1, 1)).flatten()
+                
+                # إنشاء متواليات
+                X, y = self.create_sequences(y_scaled, self.lookback)
+                
+                if len(X) == 0:
+                    continue
+                
+                # بناء وتدريب النموذج
+                model = self.build_model((self.lookback, 1))
+                
+                # تدريب سريع (للاستخدام الفوري)
+                model.fit(X, y, epochs=50, batch_size=16, verbose=0, validation_split=0.2)
+                
+                # التنبؤ التاريخي (للتحقق من جودة النموذج)
+                historical_pred = model.predict(X, verbose=0)
+                historical_pred = scaler.inverse_transform(historical_pred).flatten()
+                
+                # التنبؤ المستقبلي
+                last_sequence = y_scaled[-self.lookback:].reshape(1, self.lookback, 1)
+                future_predictions = []
+                
+                current_sequence = last_sequence.copy()
+                for _ in range(forecast_steps):
+                    next_pred = model.predict(current_sequence, verbose=0)
+                    future_predictions.append(next_pred[0, 0])
+                    # تحديث المتوالية بإضافة التنبؤ وإزالة القيمة الأولى
+                    current_sequence = np.roll(current_sequence, -1, axis=1)
+                    current_sequence[0, -1, 0] = next_pred[0, 0]
+                
+                future_predictions = scaler.inverse_transform(
+                    np.array(future_predictions).reshape(-1, 1)
+                ).flatten()
+                
+                forecasts[y_col] = future_predictions.tolist()
+                historical_predictions[y_col] = historical_pred.tolist()
+                self.scalers[y_col] = scaler
+                self.models[y_col] = model
+            
+            return {
+                'success': True,
+                'forecasts': forecasts,
+                'historical_predictions': historical_predictions,
+                'forecast_steps': forecast_steps,
+                'lookback': self.lookback
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Forecasting error: {str(e)}'
+            }
+
+
 def allowed_file(filename):
     """التحقق من نوع الملف"""
     return '.' in filename and \
@@ -179,7 +296,8 @@ def health_check():
             'upload': '/upload (POST) - Upload data file',
             'create_plot': '/create_plot (POST) - Create plot from JSON',
             'create_plot_from_file': '/create_plot_from_file (POST) - Create plot directly from file',
-            'example_data': '/example_data (GET) - Get sample data'
+            'example_data': '/example_data (GET) - Get sample data',
+            'forecast': '/forecast (POST) - LSTM forecasting'
         },
         'supported_formats': ['CSV', 'TXT', 'Excel (XLSX, XLS)'],
         'supported_plot_types': ['line', 'scatter', 'area', 'bar']
@@ -406,6 +524,56 @@ def create_plot_from_file():
 
     except Exception as e:
         return jsonify({'error': f'Error creating plot from file: {str(e)}'}), 500
+
+
+@app.route('/forecast', methods=['POST'])
+def forecast():
+    """التنبؤ باستخدام LSTM"""
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        # استخراج البيانات
+        data_dict = data.get('data', {})
+        x_col = data.get('x_column')
+        y_cols = data.get('y_columns', [])
+        chart_type = data.get('chart_type', 'line')
+
+        if not data_dict:
+            return jsonify({'error': 'No data provided for forecasting'}), 400
+
+        if not x_col:
+            return jsonify({'error': 'X column is required'}), 400
+
+        if not y_cols:
+            return jsonify({'error': 'At least one Y column is required'}), 400
+
+        # التحقق من أن نوع الرسم هو line chart
+        if chart_type != 'line':
+            return jsonify({'error': 'Forecasting is only available for line charts'}), 400
+
+        # إنشاء وتنفيذ التنبؤ
+        forecaster = LSTMForecaster(lookback=10, forecast_steps=10)
+        result = forecaster.forecast(data_dict, x_col, y_cols)
+
+        if not result['success']:
+            return jsonify({'error': result['error']}), 400
+
+        response = {
+            'success': True,
+            'forecasts': result['forecasts'],
+            'historical_predictions': result['historical_predictions'],
+            'forecast_steps': result['forecast_steps'],
+            'lookback': result['lookback'],
+            'message': f'Successfully generated forecasts for {len(result["forecasts"])} columns'
+        }
+
+        return jsonify(response)
+
+    except Exception as e:
+        return jsonify({'error': f'Error generating forecasts: {str(e)}'}), 500
 
 
 @app.route('/example_data', methods=['GET'])
