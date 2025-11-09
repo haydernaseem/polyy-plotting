@@ -54,6 +54,7 @@ CORS(app, origins=[
     "http://127.0.0.1:5500",
     "https://*.web.app",
     "https://*.firebaseapp.com"
+    "https://petroai-iq.web.app/plotly.html"
 ])
 
 # إعدادات التطبيق
