@@ -159,47 +159,128 @@ class PolyYPlot:
         return fig
 
 
-class SimpleForecaster:
-    """فئة تنبؤ بسيطة باستخدام المتوسط المتحرك"""
+class AdvancedForecaster:
+    """فئة تنبؤ متقدمة مع تحليل محور X وتحسينات"""
     
-    def __init__(self, lookback=10, forecast_steps=10):
+    def __init__(self, lookback=10):
         self.lookback = lookback
-        self.forecast_steps = forecast_steps
         
-    def create_sequences(self, data, lookback):
-        """إنشاء متواليات للتنبؤ"""
-        X, y = [], []
-        for i in range(lookback, len(data)):
-            X.append(data[i-lookback:i])
-            y.append(data[i])
-        return np.array(X), np.array(y)
+    def analyze_x_axis(self, x_data):
+        """تحليل محور X لتحديد نوع البيانات والفترات"""
+        try:
+            # محاولة تحويل إلى تاريخ/وقت
+            try:
+                x_dates = pd.to_datetime(x_data)
+                is_datetime = True
+                # حساب الفترات بين التواريخ
+                if len(x_dates) > 1:
+                    time_diffs = [(x_dates[i] - x_dates[i-1]).total_seconds() / 3600 for i in range(1, len(x_dates))]
+                    avg_interval_hours = np.mean(time_diffs)
+                    return {
+                        'type': 'datetime',
+                        'values': x_dates,
+                        'avg_interval_hours': avg_interval_hours,
+                        'is_regular': np.std(time_diffs) < avg_interval_hours * 0.1  # فحص الانتظام
+                    }
+            except:
+                pass
+            
+            # محاولة تحويل إلى أرقام
+            try:
+                x_numeric = pd.to_numeric(x_data, errors='coerce')
+                if not x_numeric.isna().all():
+                    x_numeric_clean = x_numeric.dropna()
+                    if len(x_numeric_clean) > 1:
+                        diffs = [x_numeric_clean.iloc[i] - x_numeric_clean.iloc[i-1] for i in range(1, len(x_numeric_clean))]
+                        avg_interval = np.mean(diffs)
+                        return {
+                            'type': 'numeric',
+                            'values': x_numeric_clean,
+                            'avg_interval': avg_interval,
+                            'is_regular': np.std(diffs) < abs(avg_interval) * 0.1
+                        }
+            except:
+                pass
+            
+            # إذا فشل كل شيء، استخدم الفهرس
+            return {
+                'type': 'index',
+                'values': pd.Series(range(len(x_data))),
+                'avg_interval': 1,
+                'is_regular': True
+            }
+            
+        except Exception as e:
+            print(f"Error analyzing X axis: {e}")
+            return {
+                'type': 'index',
+                'values': pd.Series(range(len(x_data))),
+                'avg_interval': 1,
+                'is_regular': True
+            }
     
-    def moving_average_forecast(self, data, window_size):
-        """تنبؤ باستخدام المتوسط المتحرك"""
-        if len(data) < window_size:
-            return []
+    def generate_future_x(self, x_analysis, forecast_steps):
+        """إنشاء قيم X مستقبلية بناءً على تحليل محور X"""
+        last_x = x_analysis['values'].iloc[-1]
+        
+        if x_analysis['type'] == 'datetime':
+            # إنشاء تواريخ مستقبلية
+            interval_hours = x_analysis['avg_interval_hours']
+            future_dates = [last_x + pd.Timedelta(hours=interval_hours * (i+1)) for i in range(forecast_steps)]
+            return future_dates
+        elif x_analysis['type'] == 'numeric':
+            # إنشاء قيم رقمية مستقبلية
+            interval = x_analysis['avg_interval']
+            future_values = [last_x + interval * (i+1) for i in range(forecast_steps)]
+            return future_values
+        else:
+            # استخدام الفهرس
+            last_index = int(last_x) if isinstance(last_x, (int, float)) else len(x_analysis['values']) - 1
+            future_indices = [last_index + i + 1 for i in range(forecast_steps)]
+            return future_indices
+    
+    def advanced_moving_average_forecast(self, y_data, window_size, forecast_steps):
+        """تنبؤ متقدم باستخدام المتوسط المتحرك مع تحليل الاتجاه"""
+        if len(y_data) < window_size:
+            return [], []
         
         # حساب المتوسط المتحرك
-        moving_avg = np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+        moving_avg = []
+        for i in range(window_size, len(y_data)):
+            window = y_data[i-window_size:i]
+            moving_avg.append(np.mean(window))
         
         if len(moving_avg) < 2:
-            return []
+            return [], []
         
-        # التنبؤ باستخدام الاتجاه الأخير
-        last_trend = moving_avg[-1] - moving_avg[-2]
-        last_value = data[-1]
+        # تحليل الاتجاه باستخدام الانحدار الخطي البسيط
+        x_trend = np.arange(len(moving_avg))
+        trend_coef = np.polyfit(x_trend, moving_avg, 1)[0]  # ميل الخط
         
+        # حساب التباين الأخير
+        recent_data = y_data[-window_size:]
+        recent_volatility = np.std(recent_data)
+        
+        # التنبؤ المستقبلي
+        last_value = y_data[-1]
         future_predictions = []
-        for i in range(self.forecast_steps):
-            # إضافة الاتجاه مع بعض التباين العشوائي
-            next_value = last_value + last_trend * (1 + 0.05 * np.random.normal())
-            future_predictions.append(next_value)
-            last_value = next_value
         
-        return future_predictions
+        for i in range(forecast_steps):
+            # الجمع بين الاتجاه والتذبذب الطبيعي
+            trend_component = trend_coef * (i + 1)
+            noise_component = np.random.normal(0, recent_volatility * 0.3)
+            next_value = last_value + trend_component + noise_component
+            
+            # التأكد من أن القيم واقعية (لا توجد قيم سالبة للبيانات الموجبة)
+            if np.min(y_data) >= 0 and next_value < 0:
+                next_value = max(0, next_value)
+                
+            future_predictions.append(next_value)
+        
+        return future_predictions, moving_avg
     
     def forecast(self, data_dict, x_col, y_cols, forecast_percentage=0.25):
-        """التنبؤ بالقيم المستقبلية"""
+        """التنبؤ بالقيم المستقبلية مع تحليل محور X"""
         try:
             # تحويل البيانات إلى DataFrame
             df = pd.DataFrame(data_dict)
@@ -207,12 +288,18 @@ class SimpleForecaster:
             if df.empty:
                 return {'success': False, 'error': 'Empty dataset provided'}
             
+            if x_col not in df.columns:
+                return {'success': False, 'error': f'X column "{x_col}" not found in data'}
+            
+            # تحليل محور X
+            x_analysis = self.analyze_x_axis(df[x_col])
+            
             # تحديد عدد خطوات التنبؤ (25% من البيانات)
             total_length = len(df)
             forecast_steps = max(3, int(total_length * forecast_percentage))
-            self.forecast_steps = forecast_steps
             
             forecasts = {}
+            future_x_values = {}
             historical_predictions = {}
             
             for y_col in y_cols:
@@ -220,26 +307,34 @@ class SimpleForecaster:
                     continue
                     
                 # استخراج البيانات وتنظيفها
-                y_data = pd.to_numeric(df[y_col], errors='coerce').dropna().values
+                y_data_series = pd.to_numeric(df[y_col], errors='coerce')
+                valid_indices = y_data_series.notna()
                 
-                if len(y_data) < self.lookback + 5:
+                if valid_indices.sum() < self.lookback + 5:
                     continue
                 
-                # استخدام المتوسط المتحرك للتنبؤ
-                window_size = min(5, len(y_data) // 4)
-                if window_size < 2:
-                    window_size = 2
+                # استخدام البيانات الصالحة فقط
+                y_data = y_data_series[valid_indices].values
+                corresponding_x = x_analysis['values'].iloc[valid_indices[valid_indices].index].values
                 
-                future_predictions = self.moving_average_forecast(y_data, window_size)
+                # إنشاء قيم X مستقبلية
+                future_x = self.generate_future_x(x_analysis, forecast_steps)
+                future_x_values[y_col] = future_x
+                
+                # استخدام المتوسط المتحرك المتقدم للتنبؤ
+                window_size = min(7, len(y_data) // 6)
+                if window_size < 3:
+                    window_size = 3
+                
+                future_predictions, moving_avg = self.advanced_moving_average_forecast(
+                    y_data, window_size, forecast_steps
+                )
                 
                 if not future_predictions:
                     continue
                 
-                # إنشاء تنبؤات تاريخية بسيطة (محاكاة)
-                historical_pred = y_data[self.lookback:].copy()
-                
                 forecasts[y_col] = future_predictions
-                historical_predictions[y_col] = historical_pred.tolist()
+                historical_predictions[y_col] = moving_avg
             
             if not forecasts:
                 return {'success': False, 'error': 'No successful forecasts generated for any column'}
@@ -247,10 +342,15 @@ class SimpleForecaster:
             return {
                 'success': True,
                 'forecasts': forecasts,
+                'future_x_values': future_x_values,
                 'historical_predictions': historical_predictions,
                 'forecast_steps': forecast_steps,
                 'lookback': self.lookback,
-                'method': 'moving_average'
+                'x_analysis': {
+                    'type': x_analysis['type'],
+                    'is_regular': x_analysis.get('is_regular', False)
+                },
+                'method': 'advanced_moving_average'
             }
             
         except Exception as e:
@@ -294,12 +394,12 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'PolyY Plotting API',
-        'version': '2.1',
+        'version': '2.2',
         'endpoints': {
             'upload': '/upload (POST) - Upload data file',
             'create_plot': '/create_plot (POST) - Create plot from JSON',
             'create_plot_from_file': '/create_plot_from_file (POST) - Create plot directly from file',
-            'forecast': '/forecast (POST) - Forecasting',
+            'forecast': '/forecast (POST) - Advanced Forecasting',
             'example_data': '/example_data (GET) - Get sample data'
         },
         'supported_formats': ['CSV', 'TXT', 'Excel (XLSX, XLS)'],
@@ -307,7 +407,8 @@ def health_check():
         'features': {
             'forecasting_available': FORECAST_AVAILABLE,
             'multi_y_axis': True,
-            'forecasting': True
+            'advanced_forecasting': True,
+            'x_axis_analysis': True
         }
     })
 
@@ -529,7 +630,7 @@ def create_plot_from_file():
 
 @app.route('/forecast', methods=['POST'])
 def forecast():
-    """التنبؤ باستخدام المتوسط المتحرك"""
+    """التنبؤ المتقدم مع تحليل محور X"""
     try:
         if not FORECAST_AVAILABLE:
             return jsonify({
@@ -547,6 +648,7 @@ def forecast():
         x_col = data.get('x_column')
         y_cols = data.get('y_columns', [])
         chart_type = data.get('chart_type', 'line')
+        forecast_percentage = data.get('forecast_percentage', 0.25)
 
         if not data_dict:
             return jsonify({'error': 'No data provided for forecasting'}), 400
@@ -561,9 +663,9 @@ def forecast():
         if chart_type != 'line':
             return jsonify({'error': 'Forecasting is only available for line charts'}), 400
 
-        # إنشاء وتنفيذ التنبؤ
-        forecaster = SimpleForecaster(lookback=10, forecast_steps=10)
-        result = forecaster.forecast(data_dict, x_col, y_cols)
+        # إنشاء وتنفيذ التنبؤ المتقدم
+        forecaster = AdvancedForecaster(lookback=10)
+        result = forecaster.forecast(data_dict, x_col, y_cols, forecast_percentage)
 
         if not result['success']:
             return jsonify({'error': result['error']}), 400
@@ -571,11 +673,13 @@ def forecast():
         response = {
             'success': True,
             'forecasts': result['forecasts'],
+            'future_x_values': result['future_x_values'],
             'historical_predictions': result['historical_predictions'],
             'forecast_steps': result['forecast_steps'],
             'lookback': result['lookback'],
+            'x_analysis': result['x_analysis'],
             'method': result['method'],
-            'message': f'Successfully generated forecasts for {len(result["forecasts"])} columns'
+            'message': f'Successfully generated advanced forecasts for {len(result["forecasts"])} columns'
         }
 
         return jsonify(response)
