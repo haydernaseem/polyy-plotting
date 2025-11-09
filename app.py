@@ -7,6 +7,15 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
+import warnings
+warnings.filterwarnings('ignore')
+
+# محاولة استيراد مكتبات التنبؤ
+try:
+    from sklearn.preprocessing import MinMaxScaler
+    FORECAST_AVAILABLE = True
+except ImportError:
+    FORECAST_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -150,6 +159,107 @@ class PolyYPlot:
         return fig
 
 
+class SimpleForecaster:
+    """فئة تنبؤ بسيطة باستخدام المتوسط المتحرك"""
+    
+    def __init__(self, lookback=10, forecast_steps=10):
+        self.lookback = lookback
+        self.forecast_steps = forecast_steps
+        
+    def create_sequences(self, data, lookback):
+        """إنشاء متواليات للتنبؤ"""
+        X, y = [], []
+        for i in range(lookback, len(data)):
+            X.append(data[i-lookback:i])
+            y.append(data[i])
+        return np.array(X), np.array(y)
+    
+    def moving_average_forecast(self, data, window_size):
+        """تنبؤ باستخدام المتوسط المتحرك"""
+        if len(data) < window_size:
+            return []
+        
+        # حساب المتوسط المتحرك
+        moving_avg = np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+        
+        if len(moving_avg) < 2:
+            return []
+        
+        # التنبؤ باستخدام الاتجاه الأخير
+        last_trend = moving_avg[-1] - moving_avg[-2]
+        last_value = data[-1]
+        
+        future_predictions = []
+        for i in range(self.forecast_steps):
+            # إضافة الاتجاه مع بعض التباين العشوائي
+            next_value = last_value + last_trend * (1 + 0.05 * np.random.normal())
+            future_predictions.append(next_value)
+            last_value = next_value
+        
+        return future_predictions
+    
+    def forecast(self, data_dict, x_col, y_cols, forecast_percentage=0.25):
+        """التنبؤ بالقيم المستقبلية"""
+        try:
+            # تحويل البيانات إلى DataFrame
+            df = pd.DataFrame(data_dict)
+            
+            if df.empty:
+                return {'success': False, 'error': 'Empty dataset provided'}
+            
+            # تحديد عدد خطوات التنبؤ (25% من البيانات)
+            total_length = len(df)
+            forecast_steps = max(3, int(total_length * forecast_percentage))
+            self.forecast_steps = forecast_steps
+            
+            forecasts = {}
+            historical_predictions = {}
+            
+            for y_col in y_cols:
+                if y_col not in df.columns:
+                    continue
+                    
+                # استخراج البيانات وتنظيفها
+                y_data = pd.to_numeric(df[y_col], errors='coerce').dropna().values
+                
+                if len(y_data) < self.lookback + 5:
+                    continue
+                
+                # استخدام المتوسط المتحرك للتنبؤ
+                window_size = min(5, len(y_data) // 4)
+                if window_size < 2:
+                    window_size = 2
+                
+                future_predictions = self.moving_average_forecast(y_data, window_size)
+                
+                if not future_predictions:
+                    continue
+                
+                # إنشاء تنبؤات تاريخية بسيطة (محاكاة)
+                historical_pred = y_data[self.lookback:].copy()
+                
+                forecasts[y_col] = future_predictions
+                historical_predictions[y_col] = historical_pred.tolist()
+            
+            if not forecasts:
+                return {'success': False, 'error': 'No successful forecasts generated for any column'}
+            
+            return {
+                'success': True,
+                'forecasts': forecasts,
+                'historical_predictions': historical_predictions,
+                'forecast_steps': forecast_steps,
+                'lookback': self.lookback,
+                'method': 'moving_average'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Forecasting error: {str(e)}'
+            }
+
+
 def allowed_file(filename):
     """التحقق من نوع الملف"""
     return '.' in filename and \
@@ -184,15 +294,21 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'PolyY Plotting API',
-        'version': '2.0',
+        'version': '2.1',
         'endpoints': {
             'upload': '/upload (POST) - Upload data file',
             'create_plot': '/create_plot (POST) - Create plot from JSON',
             'create_plot_from_file': '/create_plot_from_file (POST) - Create plot directly from file',
+            'forecast': '/forecast (POST) - Forecasting',
             'example_data': '/example_data (GET) - Get sample data'
         },
         'supported_formats': ['CSV', 'TXT', 'Excel (XLSX, XLS)'],
-        'supported_plot_types': ['line', 'scatter', 'area', 'bar']
+        'supported_plot_types': ['line', 'scatter', 'area', 'bar'],
+        'features': {
+            'forecasting_available': FORECAST_AVAILABLE,
+            'multi_y_axis': True,
+            'forecasting': True
+        }
     })
 
 
@@ -409,6 +525,63 @@ def create_plot_from_file():
 
     except Exception as e:
         return jsonify({'error': f'Error creating plot from file: {str(e)}'}), 500
+
+
+@app.route('/forecast', methods=['POST'])
+def forecast():
+    """التنبؤ باستخدام المتوسط المتحرك"""
+    try:
+        if not FORECAST_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'Forecasting not available. scikit-learn is required.'
+            }), 500
+
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        # استخراج البيانات
+        data_dict = data.get('data', {})
+        x_col = data.get('x_column')
+        y_cols = data.get('y_columns', [])
+        chart_type = data.get('chart_type', 'line')
+
+        if not data_dict:
+            return jsonify({'error': 'No data provided for forecasting'}), 400
+
+        if not x_col:
+            return jsonify({'error': 'X column is required'}), 400
+
+        if not y_cols:
+            return jsonify({'error': 'At least one Y column is required'}), 400
+
+        # التحقق من أن نوع الرسم هو line chart
+        if chart_type != 'line':
+            return jsonify({'error': 'Forecasting is only available for line charts'}), 400
+
+        # إنشاء وتنفيذ التنبؤ
+        forecaster = SimpleForecaster(lookback=10, forecast_steps=10)
+        result = forecaster.forecast(data_dict, x_col, y_cols)
+
+        if not result['success']:
+            return jsonify({'error': result['error']}), 400
+
+        response = {
+            'success': True,
+            'forecasts': result['forecasts'],
+            'historical_predictions': result['historical_predictions'],
+            'forecast_steps': result['forecast_steps'],
+            'lookback': result['lookback'],
+            'method': result['method'],
+            'message': f'Successfully generated forecasts for {len(result["forecasts"])} columns'
+        }
+
+        return jsonify(response)
+
+    except Exception as e:
+        return jsonify({'error': f'Error generating forecasts: {str(e)}'}), 500
 
 
 @app.route('/example_data', methods=['GET'])
