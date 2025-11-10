@@ -191,6 +191,32 @@ class AdvancedForecaster:
         except Exception as e:
             raise ValueError(f"Error preparing dataframe: {str(e)}")
     
+    def validate_data(self, data_dict, x_col, y_cols):
+        """التحقق من صحة البيانات المدخلة"""
+        try:
+            # تحويل البيانات إلى DataFrame
+            df = self.prepare_dataframe(data_dict)
+            
+            if df.empty:
+                return False, "Empty dataset provided"
+            
+            if x_col not in df.columns:
+                return False, f"X column '{x_col}' not found in data"
+            
+            # التحقق من وجود أعمدة Y المطلوبة
+            missing_y_cols = [y_col for y_col in y_cols if y_col not in df.columns]
+            if missing_y_cols:
+                return False, f"Y columns not found in data: {missing_y_cols}"
+            
+            # التحقق من وجود بيانات كافية
+            if len(df) < 10:
+                return False, "Insufficient data for forecasting (minimum 10 records required)"
+            
+            return True, df
+        
+        except Exception as e:
+            return False, f"Data validation error: {str(e)}"
+    
     def analyze_x_axis(self, x_data):
         """تحليل محور X لتحديد نوع البيانات والفترات"""
         try:
@@ -369,14 +395,12 @@ class AdvancedForecaster:
     def forecast(self, data_dict, x_col, y_cols, forecast_percentage=0.25):
         """التنبؤ بالقيم المستقبلية مع تحليل محور X"""
         try:
-            # تحويل البيانات إلى DataFrame
-            df = self.prepare_dataframe(data_dict)
+            # التحقق من صحة البيانات
+            is_valid, validation_result = self.validate_data(data_dict, x_col, y_cols)
+            if not is_valid:
+                return {'success': False, 'error': validation_result}
             
-            if df.empty:
-                return {'success': False, 'error': 'Empty dataset provided'}
-            
-            if x_col not in df.columns:
-                return {'success': False, 'error': f'X column "{x_col}" not found in data'}
+            df = validation_result
             
             # تحليل محور X
             x_analysis = self.analyze_x_axis(df[x_col])
@@ -390,6 +414,7 @@ class AdvancedForecaster:
             forecasts = {}
             future_x_values = {}
             historical_predictions = {}
+            columns_forecasted = []
             
             for y_col in y_cols:
                 if y_col not in df.columns:
@@ -403,8 +428,8 @@ class AdvancedForecaster:
                 valid_count = valid_indices.sum()
                 print(f"Column {y_col}: {valid_count} valid values out of {len(df)}")
                 
-                if valid_count < self.lookback + 5:
-                    print(f"Column {y_col}: insufficient valid data ({valid_count} < {self.lookback + 5})")
+                if valid_count < 10:  # تقليل الحد الأدنى إلى 10
+                    print(f"Column {y_col}: insufficient valid data ({valid_count} < 10)")
                     continue
                 
                 # استخدام البيانات الصالحة فقط
@@ -423,6 +448,7 @@ class AdvancedForecaster:
                 
                 forecasts[y_col] = future_predictions
                 historical_predictions[y_col] = historical_fit
+                columns_forecasted.append(y_col)
             
             if not forecasts:
                 return {'success': False, 'error': 'No successful forecasts generated for any column'}
@@ -439,11 +465,13 @@ class AdvancedForecaster:
                     'is_regular': x_analysis.get('is_regular', False)
                 },
                 'method': 'advanced_forecasting',
-                'columns_forecasted': list(forecasts.keys())
+                'columns_forecasted': columns_forecasted
             }
             
         except Exception as e:
             print(f"Forecasting error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'error': f'Forecasting error: {str(e)}'
@@ -734,7 +762,7 @@ def forecast():
         if not data:
             return jsonify({'error': 'No data provided'}), 400
 
-        # استخراج البيانات
+        # استخراج البيانات مع قيم افتراضية
         data_dict = data.get('data', {})
         x_col = data.get('x_column')
         y_cols = data.get('y_columns', [])
@@ -742,6 +770,7 @@ def forecast():
         forecast_percentage = data.get('forecast_percentage', 0.25)
 
         print(f"Received forecast request: x_col={x_col}, y_cols={y_cols}, chart_type={chart_type}")
+        print(f"Data type: {type(data_dict)}, Data keys: {list(data_dict.keys()) if isinstance(data_dict, dict) else 'list of dicts'}")
 
         if not data_dict:
             return jsonify({'error': 'No data provided for forecasting'}), 400
@@ -755,6 +784,18 @@ def forecast():
         # التحقق من أن نوع الرسم هو line chart
         if chart_type != 'line':
             return jsonify({'error': 'Forecasting is only available for line charts'}), 400
+
+        # التحقق من أن البيانات تحتوي على الأعمدة المطلوبة
+        if isinstance(data_dict, list) and len(data_dict) > 0:
+            # بيانات بشكل قائمة من القواميس
+            if x_col not in data_dict[0]:
+                return jsonify({'error': f'X column "{x_col}" not found in data'}), 400
+        elif isinstance(data_dict, dict):
+            # بيانات بشكل قاموس من القوائم
+            if x_col not in data_dict:
+                return jsonify({'error': f'X column "{x_col}" not found in data'}), 400
+        else:
+            return jsonify({'error': 'Invalid data format'}), 400
 
         # إنشاء وتنفيذ التنبؤ المتقدم
         forecaster = AdvancedForecaster(lookback=10)
@@ -772,7 +813,7 @@ def forecast():
             'lookback': result['lookback'],
             'x_analysis': result['x_analysis'],
             'method': result['method'],
-            'columns_forecasted': result['columns_forecasted'],
+            'columns_forecasted': result.get('columns_forecasted', list(result['forecasts'].keys())),
             'message': f'Successfully generated advanced forecasts for {len(result["forecasts"])} columns'
         }
 
@@ -780,6 +821,8 @@ def forecast():
 
     except Exception as e:
         print(f"Forecasting error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f'Error generating forecasts: {str(e)}'}), 500
 
 
